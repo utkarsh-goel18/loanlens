@@ -26,6 +26,7 @@ def test_health():
     response = client.get("/health")
 
     assert response.status_code == 200
+
     assert response.json() == {
         "status": "healthy"
     }
@@ -63,9 +64,14 @@ def test_explain():
     data = response.json()
 
     assert "explanations" in data
-    assert isinstance(data["explanations"], list)
+
+    assert isinstance(
+        data["explanations"],
+        list
+    )
 
     if data["explanations"]:
+
         explanation = data["explanations"][0]
 
         assert "feature" in explanation
@@ -95,8 +101,16 @@ def test_counterfactual():
     ]
 
     assert 0 <= data["original_probability"] <= 1
-    assert isinstance(data["counterfactuals"], list)
-    assert isinstance(data["found"], bool)
+
+    assert isinstance(
+        data["counterfactuals"],
+        list
+    )
+
+    assert isinstance(
+        data["found"],
+        bool
+    )
 
 
 def test_analyze():
@@ -109,22 +123,55 @@ def test_analyze():
 
     data = response.json()
 
+    # Core analysis fields
     assert "prediction" in data
     assert "approval_probability" in data
+    assert "decision_margin" in data
+    assert "decision_strength" in data
+
+    # Explainability
     assert "explanations" in data
+
+    # Counterfactual analysis
     assert "original_prediction" in data
     assert "original_probability" in data
     assert "counterfactuals" in data
     assert "counterfactual_found" in data
 
+    # Validate prediction
     assert data["prediction"] in [
         "Approved",
         "Rejected"
     ]
 
+    # Validate probabilities
     assert 0 <= data["approval_probability"] <= 1
     assert 0 <= data["original_probability"] <= 1
 
-    assert isinstance(data["explanations"], list)
-    assert isinstance(data["counterfactuals"], list)
-    assert isinstance(data["counterfactual_found"], bool)
+    # Decision margin must be between
+    # 0 and 0.5 because the threshold is 0.5.
+    assert 0 <= data["decision_margin"] <= 0.5
+
+    # Validate decision strength
+    assert data["decision_strength"] in [
+        "Very Strong",
+        "Strong",
+        "Moderate",
+        "Borderline"
+    ]
+
+    # Validate response types
+    assert isinstance(
+        data["explanations"],
+        list
+    )
+
+    assert isinstance(
+        data["counterfactuals"],
+        list
+    )
+
+    assert isinstance(
+        data["counterfactual_found"],
+        bool
+    )

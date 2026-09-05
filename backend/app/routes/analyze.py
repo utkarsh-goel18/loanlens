@@ -18,6 +18,22 @@ router = APIRouter(
 )
 
 
+def get_decision_strength(probability: float) -> str:
+
+    decision_margin = abs(probability - 0.5)
+
+    if decision_margin >= 0.40:
+        return "Very Strong"
+
+    if decision_margin >= 0.20:
+        return "Strong"
+
+    if decision_margin >= 0.10:
+        return "Moderate"
+
+    return "Borderline"
+
+
 @router.post(
     "",
     response_model=AnalysisResponse
@@ -26,17 +42,26 @@ def analyze(application: LoanApplication):
 
     application_data = application.model_dump()
 
-    # Prediction
     prediction_result = model_service.predict(
         application_data
     )
 
-    # SHAP explanation
+    approval_probability = prediction_result[
+        "approval_probability"
+    ]
+
+    decision_margin = abs(
+        approval_probability - 0.5
+    )
+
+    decision_strength = get_decision_strength(
+        approval_probability
+    )
+
     explanations = shap_service.explain(
         application_data
     )
 
-    # Counterfactual analysis
     counterfactual_result = (
         counterfactual_service.find_counterfactuals(
             application_data
@@ -45,16 +70,15 @@ def analyze(application: LoanApplication):
 
     return {
         "prediction": prediction_result["prediction"],
-        "approval_probability": prediction_result[
-            "approval_probability"
-        ],
+        "approval_probability": approval_probability,
+        "decision_margin": decision_margin,
+        "decision_strength": decision_strength,
 
         "explanations": explanations,
 
         "original_prediction": (
             counterfactual_result["original_prediction"]
         ),
-
         "original_probability": (
             counterfactual_result["original_probability"]
         ),
@@ -62,8 +86,16 @@ def analyze(application: LoanApplication):
         "counterfactuals": (
             counterfactual_result["counterfactuals"]
         ),
-
         "counterfactual_found": (
             counterfactual_result["found"]
-        )
+        ),
+        "counterfactual_type": (
+            counterfactual_result["counterfactual_type"]
+        ),
+        "best_tested_probability": (
+            counterfactual_result["best_tested_probability"]
+        ),
+        "counterfactual_message": (
+            counterfactual_result["message"]
+        ),
     }

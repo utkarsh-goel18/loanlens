@@ -1,43 +1,86 @@
-import joblib
-import pandas as pd
+from itertools import product
 from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 MODEL_PATH = PROJECT_ROOT / "models" / "loanlens_logistic_pipeline.joblib"
+DATA_PATH = PROJECT_ROOT / "data" / "raw" / "loan_approval.csv"
 
 
 class CounterfactualService:
 
     def __init__(self):
         self.pipeline = joblib.load(MODEL_PATH)
+        self.data = pd.read_csv(DATA_PATH)
 
-        # Features that LoanLens is allowed to modify.
-        # Credit_History is intentionally excluded because
-        # it is not treated as an actionable variable.
+        # These are the only features that LoanLens
+        # is allowed to modify when generating
+        # actionable counterfactuals.
         self.actionable_features = [
             "Applicant_Income",
             "Coapplicant_Income",
             "Loan_Amount",
-            "Loan_Term"
+            "Loan_Term",
         ]
 
-        # Loan terms that are commonly represented in the dataset.
-        # Loan_Term is treated as a discrete variable rather than
-        # an arbitrary continuous number.
+        # Practical loan-term values.
         self.valid_loan_terms = [
+            60,
+            90,
             120,
             180,
+            210,
             240,
             300,
+            330,
             360,
-            420,
-            480
         ]
 
-    def _predict(self, application: dict):
+        # Calculate realistic feature ranges from
+        # the training data.
+        self.bounds = self._calculate_bounds()
 
+    def _calculate_bounds(self):
+        bounds = {}
+
+        training_data = self.data.drop(
+            columns=["Loan_Status", "Loan_ID"]
+        )
+
+        # Use the 10th–90th percentile range so that
+        # counterfactuals stay within realistic values
+        # instead of suggesting extreme changes.
+        for feature in [
+            "Applicant_Income",
+            "Coapplicant_Income",
+            "Loan_Amount",
+        ]:
+            bounds[feature] = {
+                "lower": float(
+                    training_data[feature].quantile(0.10)
+                ),
+                "upper": float(
+                    training_data[feature].quantile(0.90)
+                ),
+            }
+
+        bounds["Loan_Term"] = {
+            "lower": float(
+                training_data["Loan_Term"].quantile(0.10)
+            ),
+            "upper": float(
+                training_data["Loan_Term"].quantile(0.90)
+            ),
+        }
+
+        return bounds
+
+    def _predict(self, application: dict):
         dataframe = pd.DataFrame([application])
 
         prediction = self.pipeline.predict(dataframe)[0]
@@ -46,280 +89,444 @@ class CounterfactualService:
 
         classes = list(self.pipeline.classes_)
 
+        # Explicitly locate the Approved class so that
+        # this does not depend on class ordering.
         approved_index = classes.index("Approved")
 
         approval_probability = probabilities[approved_index]
 
         return prediction, float(approval_probability)
 
-    def _change_cost(self, original, new):
-
-        if original == 0:
-            return abs(new - original)
-
-        return abs(new - original) / abs(original)
-
-    def _find_numeric_boundary(
+    def _change_cost(
         self,
-        application: dict,
-        feature: str,
-        original_prediction: str
+        original: dict,
+        candidate: dict,
     ):
+        total = 0.0
 
-        original_value = float(application[feature])
+        for feature in self.actionable_features:
 
-        successful_candidates = []
+            lower = self.bounds[feature]["lower"]
+            upper = self.bounds[feature]["upper"]
 
-        # Search upward and downward.
-        for direction in [1, -1]:
-
-            if direction == 1:
-
-                low = original_value
-
-                high = max(
-                    original_value * 2,
-                    original_value + 1000
-                )
-
-                # Expand the search range until the prediction flips.
-                for _ in range(10):
-
-                    test_application = application.copy()
-                    test_application[feature] = high
-
-                    prediction, _ = self._predict(
-                        test_application
-                    )
-
-                    if prediction != original_prediction:
-                        break
-
-                    high *= 2
-
-                else:
-                    continue
-
-            else:
-
-                high = original_value
-                low = max(0, original_value * 0.1)
-
-                # Check the lower boundary.
-                for _ in range(10):
-
-                    test_application = application.copy()
-                    test_application[feature] = low
-
-                    prediction, _ = self._predict(
-                        test_application
-                    )
-
-                    if prediction != original_prediction:
-                        break
-
-                    if low == 0:
-                        break
-
-                    low *= 0.5
-
-                else:
-                    continue
-
-                # If even zero does not flip the prediction,
-                # this direction has no successful counterfactual.
-                test_application = application.copy()
-                test_application[feature] = low
-
-                prediction, _ = self._predict(
-                    test_application
-                )
-
-                if prediction == original_prediction:
-                    continue
-
-            # Binary search for the smallest change that flips
-            # the model prediction.
-            for _ in range(30):
-
-                midpoint = (low + high) / 2
-
-                test_application = application.copy()
-                test_application[feature] = midpoint
-
-                prediction, _ = self._predict(
-                    test_application
-                )
-
-                if direction == 1:
-
-                    if prediction != original_prediction:
-                        high = midpoint
-                    else:
-                        low = midpoint
-
-                else:
-
-                    if prediction != original_prediction:
-                        low = midpoint
-                    else:
-                        high = midpoint
-
-            new_value = high if direction == 1 else low
-
-            final_application = application.copy()
-            final_application[feature] = new_value
-
-            final_prediction, final_probability = self._predict(
-                final_application
+            scale = max(
+                upper - lower,
+                1e-9
             )
 
-            if final_prediction == original_prediction:
-                continue
-
-            original_probability = self._predict(
-                application
-            )[1]
-
-            successful_candidates.append({
-                "changed_feature": feature,
-                "original_value": original_value,
-                "new_value": float(new_value),
-                "original_prediction": original_prediction,
-                "new_prediction": final_prediction,
-                "original_probability": original_probability,
-                "new_probability": final_probability,
-                "probability_gain": (
-                    final_probability - original_probability
-                ),
-                "change_cost": self._change_cost(
-                    original_value,
-                    new_value
+            total += (
+                abs(
+                    float(candidate[feature])
+                    - float(original[feature])
                 )
-            })
+                / scale
+            )
 
-        if not successful_candidates:
-            return None
+        return float(total)
 
-        successful_candidates.sort(
-            key=lambda x: x["change_cost"]
+    def _candidate_values(
+        self,
+        feature: str,
+        original_value: float,
+        points: int = 15,
+    ):
+        lower = self.bounds[feature]["lower"]
+        upper = self.bounds[feature]["upper"]
+
+        values = np.linspace(
+            lower,
+            upper,
+            points
         )
 
-        return successful_candidates[0]
+        if feature == "Loan_Term":
 
-    def _find_loan_term_counterfactual(
+            # Round loan terms to 30-month intervals.
+            values = np.round(values / 30) * 30
+
+            values = np.array([
+                value
+                for value in values
+                if value in self.valid_loan_terms
+            ])
+
+        else:
+
+            # Round monetary values to practical
+            # increments of 1000.
+            values = np.round(values / 1000) * 1000
+
+        # Always include the original value so that
+        # the search space represents the current
+        # application as well.
+        values = np.append(
+            values,
+            original_value
+        )
+
+        return np.unique(values)
+
+    def _build_candidate(
         self,
         application: dict,
-        original_prediction: str
+        changes: dict,
     ):
+        candidate = application.copy()
 
-        original_value = float(application["Loan_Term"])
+        for feature, value in changes.items():
+            candidate[feature] = float(value)
 
-        original_probability = self._predict(
-            application
-        )[1]
+        return candidate
 
-        candidates = []
+    def _build_result(
+        self,
+        application: dict,
+        candidate: dict,
+        original_prediction: str,
+        original_probability: float,
+        counterfactual_type: str,
+    ):
+        new_prediction, new_probability = self._predict(
+            candidate
+        )
 
-        for loan_term in self.valid_loan_terms:
+        changes = []
 
-            # Don't test the value the applicant already has.
-            if loan_term == original_value:
-                continue
+        for feature in self.actionable_features:
 
-            test_application = application.copy()
-            test_application["Loan_Term"] = loan_term
-
-            prediction, probability = self._predict(
-                test_application
+            original_value = float(
+                application[feature]
             )
 
-            if prediction != original_prediction:
+            new_value = float(
+                candidate[feature]
+            )
 
-                candidates.append({
-                    "changed_feature": "Loan_Term",
-                    "original_value": original_value,
-                    "new_value": float(loan_term),
-                    "original_prediction": original_prediction,
-                    "new_prediction": prediction,
-                    "original_probability": original_probability,
-                    "new_probability": probability,
-                    "probability_gain": (
-                        probability - original_probability
-                    ),
-                    "change_cost": self._change_cost(
-                        original_value,
-                        loan_term
-                    )
+            if not np.isclose(
+                original_value,
+                new_value
+            ):
+                changes.append({
+                    "feature": feature,
+                    "from_value": original_value,
+                    "to_value": new_value,
                 })
 
-        if not candidates:
-            return None
+        return {
+            "counterfactual_type": counterfactual_type,
+            "original_prediction": original_prediction,
+            "new_prediction": new_prediction,
+            "original_probability": original_probability,
+            "new_probability": new_probability,
+            "probability_gain": (
+                new_probability
+                - original_probability
+            ),
+            "change_cost": self._change_cost(
+                application,
+                candidate,
+            ),
+            "changes": changes,
+        }
 
-        candidates.sort(
-            key=lambda x: x["change_cost"]
+    def _single_feature_search(
+        self,
+        application: dict,
+        original_prediction: str,
+        original_probability: float,
+    ):
+        successes = []
+
+        for feature in self.actionable_features:
+
+            original_value = float(
+                application[feature]
+            )
+
+            for value in self._candidate_values(
+                feature,
+                original_value,
+                points=15,
+            ):
+
+                if np.isclose(
+                    value,
+                    original_value
+                ):
+                    continue
+
+                candidate = self._build_candidate(
+                    application,
+                    {feature: value}
+                )
+
+                prediction, _ = self._predict(
+                    candidate
+                )
+
+                if prediction == "Approved":
+
+                    result = self._build_result(
+                        application,
+                        candidate,
+                        original_prediction,
+                        original_probability,
+                        "single-feature",
+                    )
+
+                    successes.append(result)
+
+        # Prefer the smallest change.
+        # If change costs are tied, prefer the
+        # counterfactual with the highest probability.
+        successes.sort(
+            key=lambda item: (
+                item["change_cost"],
+                -item["new_probability"],
+            )
         )
 
-        return candidates[0]
+        return successes
 
-    def find_counterfactuals(self, application: dict):
+    def _multi_feature_search(
+        self,
+        application: dict,
+        original_prediction: str,
+        original_probability: float,
+    ):
+        # Seven candidate points per actionable feature.
+        # 7^4 = 2401 combinations.
+        grids = {
+            feature: self._candidate_values(
+                feature,
+                float(application[feature]),
+                points=7,
+            )
+            for feature in self.actionable_features
+        }
 
-        original_prediction, original_probability = self._predict(
-            application
+        successes = []
+
+        for values in product(
+            *[
+                grids[feature]
+                for feature in self.actionable_features
+            ]
+        ):
+
+            changes = {
+                feature: value
+                for feature, value in zip(
+                    self.actionable_features,
+                    values
+                )
+            }
+
+            candidate = self._build_candidate(
+                application,
+                changes
+            )
+
+            prediction, probability = self._predict(
+                candidate
+            )
+
+            if prediction == "Approved":
+
+                result = self._build_result(
+                    application,
+                    candidate,
+                    original_prediction,
+                    original_probability,
+                    "multi-feature",
+                )
+
+                successes.append(result)
+
+        # Prefer the lowest-cost successful
+        # multi-feature scenario.
+        successes.sort(
+            key=lambda item: (
+                item["change_cost"],
+                -item["new_probability"],
+            )
         )
 
-        # If already approved, there is no need to search for
-        # changes that make an approval happen.
+        return successes
+
+    def _best_tested_scenario(
+        self,
+        application: dict,
+    ):
+        grids = {
+            feature: self._candidate_values(
+                feature,
+                float(application[feature]),
+                points=7,
+            )
+            for feature in self.actionable_features
+        }
+
+        original_prediction, original_probability = (
+            self._predict(application)
+        )
+
+        best_result = None
+
+        for values in product(
+            *[
+                grids[feature]
+                for feature in self.actionable_features
+            ]
+        ):
+
+            candidate = self._build_candidate(
+                application,
+                {
+                    feature: value
+                    for feature, value in zip(
+                        self.actionable_features,
+                        values
+                    )
+                }
+            )
+
+            prediction, probability = self._predict(
+                candidate
+            )
+
+            result = self._build_result(
+                application,
+                candidate,
+                original_prediction,
+                original_probability,
+                "best-tested",
+            )
+
+            # We want the highest approval probability.
+            # If tied, prefer the lower change cost.
+            if (
+                best_result is None
+                or probability
+                > best_result["new_probability"]
+                or (
+                    np.isclose(
+                        probability,
+                        best_result["new_probability"]
+                    )
+                    and result["change_cost"]
+                    < best_result["change_cost"]
+                )
+            ):
+                best_result = result
+
+        return best_result
+
+    def find_counterfactuals(
+        self,
+        application: dict,
+    ):
+        original_prediction, original_probability = (
+            self._predict(application)
+        )
+
+        # Already approved applications do not need
+        # an approval-flipping counterfactual.
         if original_prediction == "Approved":
 
             return {
                 "original_prediction": original_prediction,
                 "original_probability": original_probability,
                 "counterfactuals": [],
-                "found": False
+                "found": False,
+                "counterfactual_type": None,
+                "best_tested_probability": None,
+                "message": (
+                    "This application is already predicted "
+                    "as Approved. No actionable change is "
+                    "required to reach the approval threshold."
+                ),
             }
 
-        successful_counterfactuals = []
+        # -------------------------------------------------
+        # STAGE 1
+        # Search for a single actionable feature change.
+        # -------------------------------------------------
 
-        # Continuous numerical features.
-        numeric_features = [
-            "Applicant_Income",
-            "Coapplicant_Income",
-            "Loan_Amount"
-        ]
-
-        for feature in numeric_features:
-
-            result = self._find_numeric_boundary(
+        single_feature_successes = (
+            self._single_feature_search(
                 application,
-                feature,
-                original_prediction
+                original_prediction,
+                original_probability,
             )
-
-            if result is not None:
-                successful_counterfactuals.append(result)
-
-        # Discrete Loan_Term search.
-        loan_term_result = self._find_loan_term_counterfactual(
-            application,
-            original_prediction
         )
 
-        if loan_term_result is not None:
-            successful_counterfactuals.append(
-                loan_term_result
-            )
+        if single_feature_successes:
 
-        # Smallest relative change first.
-        successful_counterfactuals.sort(
-            key=lambda x: x["change_cost"]
+            return {
+                "original_prediction": original_prediction,
+                "original_probability": original_probability,
+                "counterfactuals": (
+                    single_feature_successes[:5]
+                ),
+                "found": True,
+                "counterfactual_type": "single-feature",
+                "best_tested_probability": None,
+                "message": None,
+            }
+
+        # -------------------------------------------------
+        # STAGE 2
+        # Search combinations of actionable features.
+        # -------------------------------------------------
+
+        multi_feature_successes = (
+            self._multi_feature_search(
+                application,
+                original_prediction,
+                original_probability,
+            )
+        )
+
+        if multi_feature_successes:
+
+            return {
+                "original_prediction": original_prediction,
+                "original_probability": original_probability,
+                "counterfactuals": (
+                    multi_feature_successes[:5]
+                ),
+                "found": True,
+                "counterfactual_type": "multi-feature",
+                "best_tested_probability": None,
+                "message": None,
+            }
+
+        # -------------------------------------------------
+        # STAGE 3
+        # No realistic scenario changed the prediction.
+        # Return the best scenario that was actually tested
+        # instead of inventing an actionable recommendation.
+        # -------------------------------------------------
+
+        best_tested = self._best_tested_scenario(
+            application
         )
 
         return {
             "original_prediction": original_prediction,
             "original_probability": original_probability,
-            "counterfactuals": successful_counterfactuals[:5],
-            "found": len(successful_counterfactuals) > 0
+            "counterfactuals": [],
+            "found": False,
+            "counterfactual_type": None,
+            "best_tested_probability": (
+                best_tested["new_probability"]
+            ),
+            "message": (
+                "No realistic actionable scenario "
+                "changed the model prediction within "
+                "the tested ranges."
+            ),
         }
 
 
