@@ -13,13 +13,27 @@ class CounterfactualService:
     def __init__(self):
         self.pipeline = joblib.load(MODEL_PATH)
 
-        # Variables that LoanLens is allowed to change.
-        # Credit_History is deliberately excluded.
+        # Features that LoanLens is allowed to modify.
+        # Credit_History is intentionally excluded because
+        # it is not treated as an actionable variable.
         self.actionable_features = [
             "Applicant_Income",
             "Coapplicant_Income",
             "Loan_Amount",
             "Loan_Term"
+        ]
+
+        # Loan terms that are commonly represented in the dataset.
+        # Loan_Term is treated as a discrete variable rather than
+        # an arbitrary continuous number.
+        self.valid_loan_terms = [
+            120,
+            180,
+            240,
+            300,
+            360,
+            420,
+            480
         ]
 
     def _predict(self, application: dict):
@@ -45,7 +59,7 @@ class CounterfactualService:
 
         return abs(new - original) / abs(original)
 
-    def _find_boundary_for_feature(
+    def _find_numeric_boundary(
         self,
         application: dict,
         feature: str,
@@ -54,77 +68,104 @@ class CounterfactualService:
 
         original_value = float(application[feature])
 
-        # We search both directions.
-        # For income variables, increasing may help.
-        # For loan amount, decreasing may help.
-        # The model itself determines whether a direction works.
-
-        directions = [1, -1]
-
         successful_candidates = []
 
-        for direction in directions:
+        # Search upward and downward.
+        for direction in [1, -1]:
 
             if direction == 1:
 
                 low = original_value
+
                 high = max(
                     original_value * 2,
                     original_value + 1000
                 )
 
+                # Expand the search range until the prediction flips.
+                for _ in range(10):
+
+                    test_application = application.copy()
+                    test_application[feature] = high
+
+                    prediction, _ = self._predict(
+                        test_application
+                    )
+
+                    if prediction != original_prediction:
+                        break
+
+                    high *= 2
+
+                else:
+                    continue
+
             else:
 
-                low = max(
-                    0,
-                    original_value * 0.1
-                )
                 high = original_value
+                low = max(0, original_value * 0.1)
 
-            # Check whether this direction can actually
-            # produce an approved prediction.
-            test_application = application.copy()
-            test_application[feature] = high
+                # Check the lower boundary.
+                for _ in range(10):
 
-            prediction, probability = self._predict(
-                test_application
-            )
+                    test_application = application.copy()
+                    test_application[feature] = low
 
-            if prediction == original_prediction:
-                continue
+                    prediction, _ = self._predict(
+                        test_application
+                    )
+
+                    if prediction != original_prediction:
+                        break
+
+                    if low == 0:
+                        break
+
+                    low *= 0.5
+
+                else:
+                    continue
+
+                # If even zero does not flip the prediction,
+                # this direction has no successful counterfactual.
+                test_application = application.copy()
+                test_application[feature] = low
+
+                prediction, _ = self._predict(
+                    test_application
+                )
+
+                if prediction == original_prediction:
+                    continue
 
             # Binary search for the smallest change that flips
-            # the prediction.
-            for _ in range(25):
+            # the model prediction.
+            for _ in range(30):
 
                 midpoint = (low + high) / 2
 
                 test_application = application.copy()
                 test_application[feature] = midpoint
 
-                prediction, probability = self._predict(
+                prediction, _ = self._predict(
                     test_application
                 )
 
-                if prediction != original_prediction:
+                if direction == 1:
 
-                    if direction == 1:
+                    if prediction != original_prediction:
                         high = midpoint
                     else:
                         low = midpoint
 
                 else:
 
-                    if direction == 1:
+                    if prediction != original_prediction:
                         low = midpoint
                     else:
                         high = midpoint
 
-            # The successful boundary value
-            if direction == 1:
-                new_value = high
-            else:
-                new_value = low
+            new_value = high if direction == 1 else low
 
             final_application = application.copy()
             final_application[feature] = new_value
@@ -133,43 +174,93 @@ class CounterfactualService:
                 final_application
             )
 
-            if final_prediction != original_prediction:
+            if final_prediction == original_prediction:
+                continue
 
-                successful_candidates.append({
-                    "changed_feature": feature,
-                    "original_value": original_value,
-                    "new_value": float(new_value),
-                    "original_prediction": original_prediction,
-                    "new_prediction": final_prediction,
-                    "original_probability": self._predict(
-                        application
-                    )[1],
-                    "new_probability": final_probability,
-                    "probability_gain": (
-                        final_probability
-                        - self._predict(application)[1]
-                    ),
-                    "change_cost": self._change_cost(
-                        original_value,
-                        new_value
-                    ),
-                    "relative_change": (
-                        (new_value - original_value)
-                        / original_value
-                        if original_value != 0
-                        else None
-                    )
-                })
+            original_probability = self._predict(
+                application
+            )[1]
+
+            successful_candidates.append({
+                "changed_feature": feature,
+                "original_value": original_value,
+                "new_value": float(new_value),
+                "original_prediction": original_prediction,
+                "new_prediction": final_prediction,
+                "original_probability": original_probability,
+                "new_probability": final_probability,
+                "probability_gain": (
+                    final_probability - original_probability
+                ),
+                "change_cost": self._change_cost(
+                    original_value,
+                    new_value
+                )
+            })
 
         if not successful_candidates:
             return None
 
-        # For this feature, keep the smallest relative change.
         successful_candidates.sort(
             key=lambda x: x["change_cost"]
         )
 
         return successful_candidates[0]
+
+    def _find_loan_term_counterfactual(
+        self,
+        application: dict,
+        original_prediction: str
+    ):
+
+        original_value = float(application["Loan_Term"])
+
+        original_probability = self._predict(
+            application
+        )[1]
+
+        candidates = []
+
+        for loan_term in self.valid_loan_terms:
+
+            # Don't test the value the applicant already has.
+            if loan_term == original_value:
+                continue
+
+            test_application = application.copy()
+            test_application["Loan_Term"] = loan_term
+
+            prediction, probability = self._predict(
+                test_application
+            )
+
+            if prediction != original_prediction:
+
+                candidates.append({
+                    "changed_feature": "Loan_Term",
+                    "original_value": original_value,
+                    "new_value": float(loan_term),
+                    "original_prediction": original_prediction,
+                    "new_prediction": prediction,
+                    "original_probability": original_probability,
+                    "new_probability": probability,
+                    "probability_gain": (
+                        probability - original_probability
+                    ),
+                    "change_cost": self._change_cost(
+                        original_value,
+                        loan_term
+                    )
+                })
+
+        if not candidates:
+            return None
+
+        candidates.sort(
+            key=lambda x: x["change_cost"]
+        )
+
+        return candidates[0]
 
     def find_counterfactuals(self, application: dict):
 
@@ -177,10 +268,8 @@ class CounterfactualService:
             application
         )
 
-        successful_counterfactuals = []
-
-        # If already approved, there is no need to find a
-        # rejection counterfactual.
+        # If already approved, there is no need to search for
+        # changes that make an approval happen.
         if original_prediction == "Approved":
 
             return {
@@ -190,10 +279,18 @@ class CounterfactualService:
                 "found": False
             }
 
-        # Search each actionable feature independently.
-        for feature in self.actionable_features:
+        successful_counterfactuals = []
 
-            result = self._find_boundary_for_feature(
+        # Continuous numerical features.
+        numeric_features = [
+            "Applicant_Income",
+            "Coapplicant_Income",
+            "Loan_Amount"
+        ]
+
+        for feature in numeric_features:
+
+            result = self._find_numeric_boundary(
                 application,
                 feature,
                 original_prediction
@@ -202,7 +299,18 @@ class CounterfactualService:
             if result is not None:
                 successful_counterfactuals.append(result)
 
-        # Rank by smallest realistic change first.
+        # Discrete Loan_Term search.
+        loan_term_result = self._find_loan_term_counterfactual(
+            application,
+            original_prediction
+        )
+
+        if loan_term_result is not None:
+            successful_counterfactuals.append(
+                loan_term_result
+            )
+
+        # Smallest relative change first.
         successful_counterfactuals.sort(
             key=lambda x: x["change_cost"]
         )

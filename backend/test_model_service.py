@@ -1,4 +1,4 @@
-from app.services.model_service import model_service
+from backend.app.services.model_service import model_service
 
 
 application = {
