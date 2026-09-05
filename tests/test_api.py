@@ -175,3 +175,14 @@ def test_analyze():
         data["counterfactual_found"],
         bool
     )
+
+def test_invalid_credit_history():
+    invalid_application = TEST_APPLICATION.copy()
+    invalid_application["Credit_History"] = 2
+
+    response = client.post(
+        "/predict",
+        json=invalid_application
+    )
+
+    assert response.status_code == 422

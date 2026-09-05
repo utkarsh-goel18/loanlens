@@ -42,7 +42,7 @@ class CounterfactualService:
         ]
 
         # Calculate realistic feature ranges from
-        # the training data.
+        # the available dataset.
         self.bounds = self._calculate_bounds()
 
     def _calculate_bounds(self):

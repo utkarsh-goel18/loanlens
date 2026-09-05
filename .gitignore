@@ -43,6 +43,9 @@ htmlcov/
 *.pt
 *.pth
 
+# LoanLens production model
+!models/loanlens_logistic_pipeline.joblib
+
 # Local datasets
 /data/raw/*
 /data/processed/*

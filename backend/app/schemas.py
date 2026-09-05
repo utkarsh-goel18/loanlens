@@ -31,7 +31,9 @@ class LoanApplication(BaseModel):
         description="Loan term must be greater than zero."
     )
 
-    Credit_History: float = Field(
+    Credit_History: int = Field(
+        ge=0,
+        le=1,
         description="Credit history must be 0 or 1."
     )
 
