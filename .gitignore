@@ -54,3 +54,7 @@ htmlcov/
 
 # Local secrets / app state
 .streamlit/secrets.toml
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
