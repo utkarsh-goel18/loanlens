@@ -1,0 +1,22 @@
+.brand {
+  width: 310px !important;
+  height: 76px !important;
+  display: block !important;
+  flex: 0 0 310px !important;
+  background-image: url('/loanlens-logo.svg') !important;
+  background-repeat: no-repeat !important;
+  background-position: left center !important;
+  background-size: contain !important;
+}
+
+.brand > * {
+  display: none !important;
+}
+
+@media (max-width: 760px) {
+  .brand {
+    width: 205px !important;
+    height: 58px !important;
+    flex-basis: 205px !important;
+  }
+}
