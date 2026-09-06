@@ -1,22 +1,43 @@
 .brand {
-  width: 310px !important;
-  height: 76px !important;
   display: block !important;
-  flex: 0 0 310px !important;
+  flex: 0 0 auto !important;
   background-image: url('/loanlens-logo.svg') !important;
   background-repeat: no-repeat !important;
-  background-position: left center !important;
-  background-size: contain !important;
+  background-position: center !important;
+  background-size: 100% 100% !important;
 }
 
 .brand > * {
   display: none !important;
 }
 
+/* Compact, correctly proportioned logo for the application navbar. */
+.topbar .brand {
+  width: 250px !important;
+  height: 70px !important;
+}
+
+/* Larger treatment for the landing page. */
+.landing-header .brand {
+  width: 400px !important;
+  height: 112px !important;
+}
+
 @media (max-width: 760px) {
-  .brand {
+  .topbar .brand {
     width: 205px !important;
     height: 58px !important;
-    flex-basis: 205px !important;
+  }
+
+  .landing-header .brand {
+    width: 270px !important;
+    height: 76px !important;
+  }
+}
+
+@media (max-width: 520px) {
+  .landing-header .brand {
+    width: 245px !important;
+    height: 69px !important;
   }
 }
