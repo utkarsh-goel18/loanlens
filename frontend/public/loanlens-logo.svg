@@ -8,7 +8,7 @@
 </defs>
 <rect width="800" height="225" fill="none"/>
 
-<!-- Compact icon with clear separation from wordmark -->
+<!-- Clean compact icon -->
 <g transform="translate(20 28) scale(0.82)">
   <circle cx="100" cy="100" r="82" fill="none" stroke="url(#g)" stroke-width="18"/>
   <path d="M38 125 L72 91 L96 113 L145 62" fill="none" stroke="url(#g)" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
@@ -17,10 +17,9 @@
   <rect x="70" y="108" width="17" height="54" rx="3" fill="url(#g)"/>
   <rect x="97" y="120" width="17" height="42" rx="3" fill="url(#g)"/>
   <text x="101" y="91" text-anchor="middle" font-family="Arial, sans-serif" font-size="54" font-weight="700" fill="url(#g)">$</text>
-  <path d="M145 173 L173 164 L160 151" fill="none" stroke="url(#g)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
 </g>
 
-<!-- Wordmark intentionally separated from icon -->
+<!-- Wordmark -->
 <text x="210" y="110" font-family="Arial, sans-serif" font-size="64" font-weight="700" fill="#f3f1e8">LoanLens</text>
 <text x="212" y="151" font-family="Arial, sans-serif" font-size="28" fill="#67e8a5">Predictive. Explainable. What-If.</text>
 </svg>
