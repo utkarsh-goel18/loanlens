@@ -14,14 +14,14 @@ class SHAPService:
 
     def __init__(self):
 
-        # Load trained pipeline
+        # Load production pipeline
         self.pipeline = joblib.load(MODEL_PATH)
 
         # Extract preprocessing and model
         self.preprocessor = self.pipeline.named_steps["preprocessor"]
         self.model = self.pipeline.named_steps["model"]
 
-        # Load training data for SHAP background
+        # Load available dataset for SHAP background
         data = pd.read_csv(DATA_PATH)
 
         # Remove ID and target
@@ -43,6 +43,16 @@ class SHAPService:
         self.explainer = shap.LinearExplainer(
             self.model,
             background
+        )
+
+        # LinearExplainer for sklearn binary LogisticRegression explains
+        # the model's positive class (classes_[1]). LoanLens uses
+        # "Approved" as the business-facing target, so invert the SHAP
+        # values when the model's positive class is "Rejected".
+        classes = list(self.model.classes_)
+        positive_class = classes[1]
+        self.approval_sign = (
+            1.0 if positive_class == "Approved" else -1.0
         )
 
         # Original numerical features
@@ -119,7 +129,7 @@ class SHAPService:
             # Numerical features
             if clean_feature in self.numeric_features:
 
-                contribution = float(value)
+                contribution = float(value) * self.approval_sign
 
                 explanations.append({
                     "feature": clean_feature,
@@ -167,7 +177,7 @@ class SHAPService:
                 # actually applies to the applicant.
                 if category == application_value:
 
-                    contribution = float(value)
+                    contribution = float(value) * self.approval_sign
 
                     explanations.append({
                         "feature": matched_feature,
